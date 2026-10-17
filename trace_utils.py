@@ -39,8 +39,9 @@ def _read_sampling_rate(f: h5py.File, ds: h5py.Dataset) -> float | None:
                 val = np.asarray(obj.attrs[key]).ravel()
                 if val.size:
                     try:
-                        n = float(val[0]);
-                        if np.isfinite(n) and n > 0: return n
+                        n = float(val[0])
+                        if np.isfinite(n) and n > 0:
+                            return n
                     except (TypeError, ValueError):
                         pass
     return None
@@ -62,9 +63,11 @@ def inspect_file(path: str | Path) -> dict[str, Any]:
         ds = f[chosen]
         fs = _read_sampling_rate(f, ds)
         meta_dur = f.attrs.get("duration", None)
-        try: meta_dur = float(meta_dur) if meta_dur is not None else None
-        except (ValueError, TypeError): meta_dur = None
-        attrs = {str(k): str(v) for k,v in f.attrs.items()}
+        try:
+            meta_dur = float(meta_dur) if meta_dur is not None else None
+        except (ValueError, TypeError):
+            meta_dur = None
+        attrs = {str(k): str(v) for k, v in f.attrs.items()}
         n = int(ds.size)
     parsed = identify(p.name)
     return {
@@ -79,12 +82,7 @@ def inspect_file(path: str | Path) -> dict[str, Any]:
 
 def read_envelope(path: str, dataset: str, sampling_rate_hz: float,
                   start_s: float, duration_s: float, max_bins: int = 1800) -> dict[str, np.ndarray]:
-    """Streaming min/max/mean per time bin, preserving brief extremes over long windows.
-
-    Bounded buffer of about (128 * samples_per_bin * 8) bytes. Does not load
-    a full 50/100-second raw trace into RAM.
-    Returned t is RELATIVE to selected region start, in seconds.
-    """
+    """Streaming min/max/mean per time bin, preserving brief extremes over long windows."""
     if sampling_rate_hz <= 0 or duration_s <= 0 or max_bins < 2:
         raise ValueError("Sampling rate, duration and max_bins must be positive.")
     with h5py.File(path, "r") as f:
@@ -100,7 +98,6 @@ def read_envelope(path: str, dataset: str, sampling_rate_hz: float,
         lower = np.empty(nb, dtype=np.float64)
         upper = np.empty(nb, dtype=np.float64)
         avg = np.empty(nb, dtype=np.float64)
-        # Cap memory even for unusually long windows.
         bins_per_block = max(1, min(128, int(1_500_000 / bin_width)))
         for b0 in range(0, nb, bins_per_block):
             bc = min(bins_per_block, nb - b0)
@@ -114,9 +111,28 @@ def read_envelope(path: str, dataset: str, sampling_rate_hz: float,
                 lower[b0:b0+bc] = np.nanmin(matrix, axis=1)
                 upper[b0:b0+bc] = np.nanmax(matrix, axis=1)
                 avg[b0:b0+bc] = np.nanmean(matrix, axis=1)
-            centers = (np.arange(b0,b0+bc,dtype=float) + 0.5) * bin_width
-            tt[b0:b0+bc] = np.minimum(centers, n-0.5) / sampling_rate_hz
+            centers = (np.arange(b0, b0+bc, dtype=float) + 0.5) * bin_width
+            tt[b0:b0+bc] = np.minimum(centers, n - 0.5) / sampling_rate_hz
         return {"t": tt, "min": lower, "max": upper, "mean": avg}
+
+
+def read_decimated(path: str, dataset: str, sampling_rate_hz: float,
+                   start_s: float, duration_s: float, max_points: int = 150_000) -> dict[str, np.ndarray]:
+    """Read a raw-looking trace by taking every stride-th sample. No averaging/filtering."""
+    if sampling_rate_hz <= 0 or duration_s <= 0 or max_points < 10:
+        raise ValueError("Sampling rate, duration and max_points must be positive.")
+    with h5py.File(path, "r") as f:
+        ds = f[dataset]
+        sample_a = max(0, min(ds.size, int(round(start_s * sampling_rate_hz))))
+        sample_b = max(sample_a, min(ds.size, int(round((start_s + duration_s) * sampling_rate_hz))))
+        n = sample_b - sample_a
+        if n <= 0:
+            return {"t": np.array([]), "current": np.array([]), "stride": np.array([1])}
+        stride = max(1, math.ceil(n / max_points))
+        yy = ds[sample_a:sample_b:stride].astype(np.float64, copy=False)
+        idx = sample_a + np.arange(yy.size, dtype=np.int64) * stride
+        tt = (idx - sample_a) / sampling_rate_hz
+        return {"t": tt, "current": yy, "stride": np.array([stride])}
 
 
 def read_raw_window(path: str, dataset: str, sampling_rate_hz: float,
@@ -124,11 +140,11 @@ def read_raw_window(path: str, dataset: str, sampling_rate_hz: float,
                     max_samples: int = 300_000) -> dict[str, np.ndarray]:
     if sampling_rate_hz <= 0 or duration_ms <= 0:
         raise ValueError("Sampling rate and duration must be positive.")
-    with h5py.File(path,"r") as f:
+    with h5py.File(path, "r") as f:
         ds = f[dataset]
         a = max(0, min(ds.size, int(round(start_s * sampling_rate_hz))))
         b = max(a, min(ds.size, int(round((start_s + duration_ms/1000) * sampling_rate_hz))))
-        if b-a > max_samples:
+        if b - a > max_samples:
             raise ValueError("Raw zoom exceeds 300,000 samples. Select a shorter time range.")
         yy = ds[a:b].astype(float, copy=False)
     xx = np.arange(yy.size, dtype=float) * 1000 / sampling_rate_hz
