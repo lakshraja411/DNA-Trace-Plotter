@@ -149,3 +149,27 @@ def read_raw_window(path: str, dataset: str, sampling_rate_hz: float,
         yy = ds[a:b].astype(float, copy=False)
     xx = np.arange(yy.size, dtype=float) * 1000 / sampling_rate_hz
     return {"t_ms": xx, "current": yy}
+
+
+def read_exact_window(path: str, dataset: str, sampling_rate_hz: float,
+                      start_s: float, duration_s: float,
+                      max_samples: int = 5_000_000) -> dict[str, np.ndarray]:
+    """Unmodified raw HDF5 signal, with sample-index-based time axis.
+
+    This neither subsamples, normalizes, averages, nor digitally filters.
+    Intended for exact comparisons at up to 25 seconds / 200 kHz.
+    """
+    if not np.isfinite(sampling_rate_hz) or sampling_rate_hz <= 0:
+        raise ValueError('Invalid sampling frequency')
+    if not np.isfinite(start_s) or start_s < 0 or duration_s <= 0:
+        raise ValueError('Start and duration must be positive')
+    with h5py.File(path, 'r') as f:
+        ds = f[dataset]
+        a = max(0, min(ds.size, int(round(start_s * sampling_rate_hz))))
+        b = max(a, min(ds.size, int(round((start_s + duration_s) * sampling_rate_hz))))
+        if b-a > max_samples:
+            raise ValueError(f'This exact plot needs {b-a:,} samples (limit {max_samples:,}). Shorten the window.')
+        current = np.asarray(ds[a:b])
+    t = np.arange(a, b, dtype=np.float64) / sampling_rate_hz
+    return {'t': t, 'current': current, 'start_index': a,
+            'stop_index': b, 'n_samples': b-a}

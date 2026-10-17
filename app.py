@@ -18,7 +18,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-from trace_utils import SALTS, SALT_COLORS, inspect_file, read_decimated, read_envelope, read_raw_window
+from trace_utils import SALTS, SALT_COLORS, inspect_file, read_decimated, read_envelope, read_raw_window, read_exact_window
 
 st.set_page_config(page_title="DNA Trace Explorer", page_icon="🧬", layout="wide")
 st.markdown("""<style>
@@ -123,7 +123,7 @@ def get_colors(palette_name: str, overrides: dict[str, str]) -> dict[str, str]:
 
 
 def get_trace_data(rec, start, seconds, plot_mode, point_budget):
-    if plot_mode == 'Raw (decimated, no averaging)':
+    if plot_mode == 'Sample-skip preview (not event-faithful)':
         raw = cached_decimated(rec['path'], rec['dataset'], float(rec['sampling_rate_hz']), start, seconds, point_budget, stamp(rec))
         return {'kind': 'raw', **raw}
     env = cached_envelope(rec['path'], rec['dataset'], float(rec['sampling_rate_hz']), start, seconds, point_budget, stamp(rec))
@@ -166,15 +166,21 @@ def plotly_comparison(traces, unit: str, baseline_center: bool, plot_mode: str, 
                           row=row, col=1)
         else:
             low, hi, mean = visual_data(data, baseline_center)
-            if plot_mode == 'Envelope + mean':
-                fig.add_trace(go.Scatter(x=data['t'], y=low, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=row, col=1)
-                fig.add_trace(go.Scatter(x=data['t'], y=hi, mode='lines', fill='tonexty',
-                                         fillcolor='rgba(120,130,150,0.15)' if overlay else 'rgba(100,130,160,0.17)',
-                                         line=dict(width=0), showlegend=False, hoverinfo='skip'), row=row, col=1)
-            fig.add_trace(go.Scatter(x=data['t'], y=mean, mode='lines', name=r['salt'], showlegend=overlay,
-                                     line=dict(color=color, width=1.0),
-                                     hovertemplate='t=%{x:.3f}s<br>I=%{y:.3f}<extra>' + r['salt'] + '</extra>'),
-                          row=row, col=1)
+            if plot_mode == 'Min–max spikes (no averaging)':
+                xx = np.column_stack((data['t'], data['t'], np.full(len(data['t']), np.nan))).reshape(-1)
+                yy = np.column_stack((low, hi, np.full(len(low), np.nan))).reshape(-1)
+                fig.add_trace(go.Scattergl(x=xx, y=yy, mode='lines', name=r['salt'], showlegend=overlay,
+                                           line=dict(color=color, width=0.65), hoverinfo='skip'), row=row, col=1)
+            else:
+                if plot_mode == 'Envelope + mean':
+                    fig.add_trace(go.Scatter(x=data['t'], y=low, mode='lines', line=dict(width=0), showlegend=False, hoverinfo='skip'), row=row, col=1)
+                    fig.add_trace(go.Scatter(x=data['t'], y=hi, mode='lines', fill='tonexty',
+                                             fillcolor='rgba(120,130,150,0.15)' if overlay else 'rgba(100,130,160,0.17)',
+                                             line=dict(width=0), showlegend=False, hoverinfo='skip'), row=row, col=1)
+                fig.add_trace(go.Scatter(x=data['t'], y=mean, mode='lines', name=r['salt'], showlegend=overlay,
+                                         line=dict(color=color, width=1.0),
+                                         hovertemplate='t=%{x:.3f}s<br>I=%{y:.3f}<extra>' + r['salt'] + '</extra>'),
+                              row=row, col=1)
         if not overlay:
             fig.update_yaxes(title_text=f"Current ({unit})" if i == nr // 2 else "", row=row, col=1)
     fig.update_xaxes(title_text='Time since selected region start (s)', row=nr, col=1)
@@ -199,9 +205,12 @@ def mpl_comparison(traces, unit: str, baseline_center: bool, plot_mode: str,
             ax.plot(data['t'], yy, color=color, lw=.55, label=r['salt'])
         else:
             low, hi, mean = visual_data(data, baseline_center)
-            if plot_mode == 'Envelope + mean':
-                ax.fill_between(data['t'], low, hi, color=color, alpha=.14, lw=0)
-            ax.plot(data['t'], mean, color=color, lw=.8, label=r['salt'])
+            if plot_mode == 'Min–max spikes (no averaging)':
+                ax.vlines(data['t'], low, hi, color=color, lw=.45, alpha=.8, label=r['salt'])
+            else:
+                if plot_mode == 'Envelope + mean':
+                    ax.fill_between(data['t'], low, hi, color=color, alpha=.14, lw=0)
+                ax.plot(data['t'], mean, color=color, lw=.8, label=r['salt'])
         if not overlay:
             ax.text(.005, .95, f"{r['salt']}  |  region {start:g}–{start + (data['t'][-1] if data['t'].size else 0):.1f} s",
                     transform=ax.transAxes, va='top', fontsize=11, fontweight='bold', color=color)
@@ -268,15 +277,20 @@ with st.sidebar:
     st.divider()
     st.header('2 · Plot preferences')
     unit = st.text_input('Current unit', value='nA')
-    plot_mode = st.selectbox('Long-window plotting mode', ['Raw (decimated, no averaging)', 'Envelope + mean', 'Mean only'], index=0,
-                             help='Raw mode gives the look of your screenshot. Envelope mode preserves extreme dips. Mean only is the simplest summary.')
-    point_budget = st.slider('Target points/bins per trace', min_value=1000, max_value=200000, step=1000, value=40000,
+    plot_mode = st.selectbox('Long-window plotting mode', ['Min–max spikes (no averaging)', 'Sample-skip preview (not event-faithful)', 'Envelope + mean', 'Mean only'], index=0,
+                             help='Min–max spikes preserves all sample extrema in each display interval. Sample-skip preview can miss narrow events. Exact raw is in its own tab.')
+    point_budget = st.slider('Target points/bins per trace', min_value=1000, max_value=200000, step=1000, value=8000,
                              help='In raw mode this is the maximum number of displayed points. In envelope/mean mode this is the number of bins.')
     center_baseline = st.checkbox('Baseline-center traces', value=False,
                                   help='Subtract the median level so shape is easier to compare.')
     st.divider()
     st.header('3 · Colour controls')
-    palette_name = st.selectbox('Palette preset', list(PALETTES.keys()), index=1)
+    def _apply_palette():
+        palette = PALETTES[st.session_state['palette_name']]
+        for salt in SALTS:
+            st.session_state[f'clr_{salt}'] = palette[salt]
+    palette_name = st.selectbox('Palette preset', list(PALETTES.keys()), index=1,
+                                key='palette_name', on_change=_apply_palette)
     default_palette = PALETTES[palette_name]
     color_overrides = {}
     with st.expander('Custom colours for each salt', expanded=False):
@@ -331,7 +345,7 @@ n1.metric('Usable files', len(valid))
 n2.metric('Distinct salts', len({r['salt'] for r in valid if r['salt'] != 'Unknown'}))
 n3.metric('DNA types', ', '.join(sorted({r['dna'] for r in valid}))[:45])
 
-tab1, tab2, tab3, tab4 = st.tabs(['🎨 Five-salt comparison', '🧬 λ-DNA vs 1 kb', '🔎 Event zoom (milliseconds)', '📁 File inspector'])
+tab1, tab2, tab3, tab4, tab_exact = st.tabs(['🎨 Five-salt comparison', '🧬 λ-DNA vs 1 kb', '🔎 Event zoom (milliseconds)', '📁 File inspector', '🧪 Exact raw verification'])
 
 with tab1:
     st.subheader('Comparative raw-current panels')
@@ -360,8 +374,10 @@ with tab1:
         if traces:
             fig = plotly_comparison(traces, unit, center_baseline, plot_mode, view == 'Overlay', active_colors)
             st.plotly_chart(fig, use_container_width=True, config={'displaylogo': False, 'scrollZoom': True})
-            if plot_mode == 'Raw (decimated, no averaging)':
-                st.caption('Raw mode shows every stride-th point from the chosen region, with no averaging. This gives the raw-looking style you wanted while keeping the app fast.')
+            if plot_mode == 'Sample-skip preview (not event-faithful)':
+                st.warning('Sample-skip mode can omit short events or exaggerate the visual difference between recordings. Use min–max spikes for overviews, or Exact Raw for a one-to-one check.')
+            elif plot_mode == 'Min–max spikes (no averaging)':
+                st.caption('Min–max spikes preserve both extrema of every display time-bin with no smoothing; horizontal positions within each bin are approximate. This is a visualization, not raw event waveforms.')
             elif plot_mode == 'Envelope + mean':
                 st.caption('Envelope mode preserves brief deep blockades that may disappear in ordinary downsampling.')
             expfig = mpl_comparison(traces, unit, center_baseline, plot_mode, view == 'Overlay', active_colors)
@@ -430,12 +446,18 @@ with tab2:
                         ax.plot(data['t'], yy, color=colr, lw=.55)
                     else:
                         low, high, mean = visual_data(data, center_baseline)
-                        if plot_mode == 'Envelope + mean':
-                            fig2.add_trace(go.Scatter(x=data['t'], y=low, line=dict(width=0), hoverinfo='skip', showlegend=False), row=i + 1, col=col + 1)
-                            fig2.add_trace(go.Scatter(x=data['t'], y=high, fill='tonexty', fillcolor='rgba(120,130,150,.15)', line=dict(width=0), hoverinfo='skip', showlegend=False), row=i + 1, col=col + 1)
-                            ax.fill_between(data['t'], low, high, color=colr, alpha=.14, lw=0)
-                        fig2.add_trace(go.Scatter(x=data['t'], y=mean, mode='lines', line=dict(color=colr, width=1), showlegend=False), row=i + 1, col=col + 1)
-                        ax.plot(data['t'], mean, color=colr, lw=.8)
+                        if plot_mode == 'Min–max spikes (no averaging)':
+                            xx = np.column_stack((data['t'], data['t'], np.full(len(data['t']), np.nan))).reshape(-1)
+                            yy = np.column_stack((low, high, np.full(len(low), np.nan))).reshape(-1)
+                            fig2.add_trace(go.Scattergl(x=xx, y=yy, mode='lines', line=dict(color=colr, width=.65), showlegend=False, hoverinfo='skip'), row=i + 1, col=col + 1)
+                            ax.vlines(data['t'], low, high, color=colr, lw=.45, alpha=.8)
+                        else:
+                            if plot_mode == 'Envelope + mean':
+                                fig2.add_trace(go.Scatter(x=data['t'], y=low, line=dict(width=0), hoverinfo='skip', showlegend=False), row=i + 1, col=col + 1)
+                                fig2.add_trace(go.Scatter(x=data['t'], y=high, fill='tonexty', fillcolor='rgba(120,130,150,.15)', line=dict(width=0), hoverinfo='skip', showlegend=False), row=i + 1, col=col + 1)
+                                ax.fill_between(data['t'], low, high, color=colr, alpha=.14, lw=0)
+                            fig2.add_trace(go.Scatter(x=data['t'], y=mean, mode='lines', line=dict(color=colr, width=1), showlegend=False), row=i + 1, col=col + 1)
+                            ax.plot(data['t'], mean, color=colr, lw=.8)
                     ax.text(.015, .94, f'{salt} · {dna_label}', transform=ax.transAxes, va='top', color=colr, fontsize=11, fontweight='bold')
                     ax.spines[['right', 'top']].set_visible(False)
                     ax.grid(alpha=.12)
@@ -502,6 +524,73 @@ with tab4:
     st.json(mr['file_attrs'])
     st.info('Dataset time zero is the beginning of `selected_data`. The original ABF timestamp or selection offset is not stored in your example file, so the viewer cannot reconstruct it.')
     st.caption('No event detection or topology inference is performed here. The tool only displays measured traces and calculates visualization summaries when needed.')
+
+with tab_exact:
+    st.subheader('Exact, unprocessed trace — verify against your reference')
+    st.markdown('This view plots **every recorded sample** for the chosen window. No averaging, '
+                'no stride-based skipping, no baseline subtraction and no digital filtering. '
+                'For long comparisons, use the separate min–max overview mode.')
+    exact_choice = st.selectbox('Choose the **exact** HDF5 file',
+                                [r['path'] for r in valid], key='exact_file')
+    er = next(r for r in valid if r['path'] == exact_choice)
+    st.caption(f"Full path: `{er['path']}`  |  HDF5 dataset: `/{er['dataset']}`")
+    st.caption(f"Sampling rate: {er['sampling_rate_hz']:g} samples/s  |  "
+               f"Total selected-data duration: {valid_duration(er):.4f} s  |  "
+               f"Original metadata duration: {er['metadata_duration_s']}")
+    ec1, ec2, ec3 = st.columns([1, 1, 1])
+    with ec1:
+        start_exact = st.number_input('Exact trace start (s)', min_value=0.,
+                                      max_value=max(0., valid_duration(er)-.0001),
+                                      value=0., step=1., format='%.4f', key='exact_start')
+    with ec2:
+        window_exact = st.number_input('Exact trace window (s)', min_value=.01,
+                                       max_value=25., value=20., step=1., key='exact_secs')
+    with ec3:
+        line_width = st.slider('Line width', min_value=.1, max_value=1.5,
+                               value=.30, step=.05, key='exact_lw')
+    show_grid = st.checkbox('Grid lines', value=False, key='exact_grid')
+    y_manual = st.checkbox('Set vertical axis range manually', value=False, key='exact_y')
+    if y_manual:
+        yc1, yc2 = st.columns(2)
+        with yc1: ymin = st.number_input('Y minimum', value=2., key='ymin')
+        with yc2: ymax = st.number_input('Y maximum', value=9., key='ymax')
+    total_exact = min(window_exact, max(0., valid_duration(er)-start_exact))
+    if total_exact > 0:
+        if math.ceil(total_exact * float(er['sampling_rate_hz'])) > 5_000_000:
+            st.warning('More than 5 million samples requested. Reduce the window or use min–max overview.')
+        else:
+            with st.spinner('Reading every sample (no sample skipping)…'):
+                exact = read_exact_window(er['path'], er['dataset'], float(er['sampling_rate_hz']),
+                                          start_exact, total_exact)
+            xx = exact['t']; yy = exact['current']
+            finite = yy[np.isfinite(yy)]
+            if finite.size:
+                st.caption(f"**Verified sample range:** [{exact['start_index']:,}, {exact['stop_index']:,})  ·  "
+                           f"**Points plotted:** {exact['n_samples']:,}  ·  "
+                           f"**Raw min / median / max:** {finite.min():.5g} / {np.median(finite):.5g} / {finite.max():.5g} {unit}")
+                st.caption(f"First five stored values in interval: `{yy[:5].tolist()}`")
+            # Deliberately use Matplotlib (not Plotly): millions of exact samples in a browser trace are expensive.
+            fig_exact, ax_exact = plt.subplots(figsize=(15, 5.2), dpi=110)
+            ax_exact.plot(xx, yy, color=active_colors.get(er['salt'], '#1f77b4'),
+                          linewidth=line_width, rasterized=True)
+            ax_exact.set(xlabel='Time (s)', ylabel=f'Current ({unit})',
+                         title=er['name'])
+            ax_exact.set_xlim(start_exact, start_exact+total_exact)
+            if y_manual and ymin < ymax:
+                ax_exact.set_ylim(ymin, ymax)
+            if show_grid:
+                ax_exact.grid(alpha=.2)
+            fig_exact.tight_layout()
+            exact_png = io.BytesIO()
+            fig_exact.savefig(exact_png, format='png', dpi=150, bbox_inches='tight', facecolor='white')
+            st.image(exact_png.getvalue(), use_container_width=True)
+            st.download_button('Download exact raw verification PNG (150 dpi)',
+                               data=exact_png.getvalue(),
+                               file_name='EXACT_RAW_'+Path(er['name']).stem+f'_{start_exact:g}s.png',
+                               mime='image/png', key='exact_png_export')
+            st.caption('Exact view can take several seconds because it plots millions of samples. Poster-ready PDF and 300-dpi PNG are available in the comparison tabs.')
+            plt.close(fig_exact)
+    st.warning('If this exact raw plot still differs from the reference screenshot, the cause is not display downsampling. Check file path, HDF5 dataset, selected region, and whether the reference tool applies any preprocessing. Upload that **same LiCl .h5 file** for a direct comparison.')
 
 st.divider()
 st.caption('DNA Trace Explorer · built for comparing nanopore ionic-current traces · Original .h5 files are read-only and never modified')

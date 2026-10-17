@@ -65,3 +65,19 @@ When launched locally, all traces stay on your computer. This app does not uploa
 - If salt, DNA or voltage show as 'Unknown', adjust the labels in the metadata editor.
 - If signal time is wrong, check the `sampling_rate_hz` column, which should be in samples per second.
 - If the long-range plots look like thick bands, reduce window length and/or increase the bin count. Noise and rare spikes legitimately contribute to min-max ranges.
+
+## Important update — v3: exact raw verification
+
+**Why this matters:** v2's "raw" long-window mode *skipped samples*. This is not digital low-pass filtering, but it can omit brief nanopore blockades and cannot be used to confirm that a plot is a faithful view of every measured sample.
+
+**Verify the exact file first:**
+
+1. Load the folder containing the specific `.h5` file that produced your reference plot.
+2. Open **Exact raw verification** and select that precise file path (not just the salt label).
+3. Set start = `0 s`, duration = `20 s` and leave baseline centering and processing off (this view ignores the overview processing controls).
+4. Compare the printed HDF5 dataset, sampling rate, raw min/median/max, and first five numeric signal samples to those obtained by a separate reader of the same file.
+5. This mode uses *every sample*, no averaging, no sample skipping, no extra filter and no interpolation. It uses a normal Matplotlib line, similar to the reference screenshot. It is deliberately limited to 5 million samples per plot for memory/performance.
+
+The 50–100 s multi-salt plot now defaults to **Min–max spikes (no averaging)**. It reads every sample within each time bin and draws a vertical mark spanning the bin's min and max. It retains the extrema but **does not reproduce exact within-bin event timing or shapes**. Use millisecond zoom or the exact raw view for event-level analysis.
+
+If exact raw still differs, the discrepancy is not caused by the app's sample skipping. Check the exact HDF5 file and dataset, selected interval, units and any preprocessing by the program that generated the reference plot. A screenshot alone cannot establish that the source arrays are identical.
