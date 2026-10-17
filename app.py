@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import io
 import math
+import numpy as np
 import shutil
 import tempfile
 from pathlib import Path
