@@ -1,0 +1,6 @@
+streamlit>=1.42,<2
+h5py>=3.10,<4
+numpy>=1.26,<3
+pandas>=2.0,<3
+matplotlib>=3.8,<4
+plotly>=5.20,<7
